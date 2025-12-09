@@ -86,6 +86,7 @@ public:
     AP_Float fixed_angle;
     AP_Float fixed_gain;
     AP_Float flap_angle_deg;
+    AP_Float slew_rate;
 
     float current_tilt;
     float current_throttle;

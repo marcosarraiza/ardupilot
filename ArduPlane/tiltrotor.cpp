@@ -82,6 +82,16 @@ const AP_Param::GroupInfo Tiltrotor::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("WING_FLAP", 10, Tiltrotor, flap_angle_deg, 0),
 
+    // @Param: SLEW_RATE
+    // @DisplayName: Tiltrotor motor slew rate (AUTO takeoff)
+    // @Description: Maximum rate of change for tiltrotor motor outputs during AUTO takeoff. 
+    //               Units are PWM output value per second. Set to 0 to disable slew limiting.
+    // @Units: PWM/s
+    // @Increment: 1
+    // @Range: 0 10000
+    // @User: Standard
+    AP_GROUPINFO("slew_rate", 11, Tiltrotor, slew_rate, 1),
+
     AP_GROUPEND
 };
 
@@ -230,13 +240,31 @@ void Tiltrotor::continuous_update(void)
         max_change = tilt_max_change(false);
 
         float new_throttle = constrain_float(SRV_Channels::get_output_scaled(SRV_Channel::k_throttle)*0.01, 0, 1);
-        if (current_tilt < get_fully_forward_tilt()) {
-            current_throttle = constrain_float(new_throttle,
+
+        bool auto_takeoff = (plane.control_mode == &plane.mode_auto) && plane.mission.get_current_nav_cmd().id == MAV_CMD_NAV_TAKEOFF && (slew_rate.get() > 0);
+
+        if (auto_takeoff) {
+            float dt = plane.G_Dt;
+            float max_delta = (1.0f / slew_rate.get()) * dt;  // Convert PWM/s to normalized 0..1 scale
+            float delta = new_throttle - current_throttle;
+
+            if (delta > max_delta) {
+                current_throttle += max_delta;
+            } else if (delta < -max_delta) {
+                current_throttle -= max_delta;
+            } else {
+                current_throttle = new_throttle;
+            }
+        } else {
+            if (current_tilt < get_fully_forward_tilt()) {
+                current_throttle = constrain_float(new_throttle,
                                                     current_throttle-max_change,
                                                     current_throttle+max_change);
-        } else {
-            current_throttle = new_throttle;
+            } else {
+                current_throttle = new_throttle;
+            }  
         }
+
         if (!plane.arming.is_armed_and_safety_off()) {
             current_throttle = 0;
         } else {
