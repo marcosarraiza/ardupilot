@@ -3940,7 +3940,11 @@ float QuadPlane::forward_throttle_pct()
  */
 bool QuadPlane::land_yaw_hold(void) const
 {
-    return land_yaw_hold_active && in_vtol_land_sequence();
+    // only hold the commanded heading once we are actually descending
+    // (LAND_DESCEND / LAND_FINAL / LAND_ABORT). During the POSITION1/POSITION2
+    // approach the aircraft yaws normally and only rotates to the commanded
+    // heading as it starts coming down.
+    return land_yaw_hold_active && in_vtol_land_descent();
 }
 
 /*
