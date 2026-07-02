@@ -1040,7 +1040,7 @@ MAV_MISSION_RESULT AP_Mission::sanity_check_params(const mavlink_mission_item_in
         nan_mask = ~(1 << 3); // param 4 can be nan
         break;
     case MAV_CMD_NAV_VTOL_LAND:
-        nan_mask = ~((1 << 2) | (1 << 3)); // param 3 and 4 can be nan
+        nan_mask = ~((1 << 1) | (1 << 2) | (1 << 3)); // param 2 (heading), 3 and 4 can be nan
         break;
     default:
         nan_mask = 0xff;
@@ -1356,7 +1356,13 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
         break;
 
     case MAV_CMD_NAV_VTOL_LAND:
-        cmd.p1 = (NAV_VTOL_LAND_OPTIONS)packet.param1;
+        cmd.p1 = ((uint16_t)packet.param1) & VTOL_LAND_OPTIONS_MASK;
+        // optional commanded landing heading in param2 (degrees). 0/blank = off,
+        // 1..360 = hold that absolute heading through the descent (enter 360 for north).
+        if (is_positive(packet.param2)) {
+            const uint16_t yaw_code = (uint16_t)constrain_float(roundf(packet.param2), 1, 360);
+            cmd.p1 |= (yaw_code & VTOL_LAND_YAW_MASK) << VTOL_LAND_YAW_SHIFT;
+        }
         break;
 
     case MAV_CMD_DO_VTOL_TRANSITION:
@@ -1896,7 +1902,13 @@ bool AP_Mission::mission_cmd_to_mavlink_int(const AP_Mission::Mission_Command& c
         break;
 
     case MAV_CMD_NAV_VTOL_LAND:
-        packet.param1 = cmd.p1;
+        packet.param1 = cmd.p1 & VTOL_LAND_OPTIONS_MASK;
+        {
+            const uint16_t yaw_code = (cmd.p1 >> VTOL_LAND_YAW_SHIFT) & VTOL_LAND_YAW_MASK;
+            if (yaw_code != 0) {
+                packet.param2 = yaw_code;
+            }
+        }
         break;
 
     case MAV_CMD_DO_VTOL_TRANSITION:

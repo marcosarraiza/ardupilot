@@ -3463,6 +3463,13 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
         return false;
     }
 
+    // optional commanded landing heading packed into p1 (see AP_Mission p1 encoding).
+    // if present it takes precedence over any CONDITION_YAW set earlier.
+    const uint16_t land_yaw_code = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
+    if (land_yaw_code != 0) {
+        set_land_yaw_hold_deg((float)(land_yaw_code % 360));
+    }
+
     plane.set_next_WP(cmd.content.location);
     // initially aim for current altitude
     plane.next_WP_loc.copy_alt_from(plane.current_loc);
@@ -4823,7 +4830,7 @@ bool QuadPlane::landing_with_fixed_wing_spiral_approach(void) const
     
     return ((cmd.id == MAV_CMD_NAV_VTOL_LAND) &&
             (option_is_set(QuadPlane::Option::MISSION_LAND_FW_APPROACH) ||
-             cmd.p1 == NAV_VTOL_LAND_OPTIONS_FW_SPIRAL_APPROACH));
+             (cmd.p1 & AP_Mission::VTOL_LAND_OPTIONS_MASK) == NAV_VTOL_LAND_OPTIONS_FW_SPIRAL_APPROACH));
 }
 
 /*
