@@ -3464,10 +3464,12 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
     }
 
     // optional commanded landing heading packed into p1 (see AP_Mission p1 encoding).
-    // if present it takes precedence over any CONDITION_YAW set earlier.
-    const uint16_t land_yaw_code = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
-    if (land_yaw_code != 0) {
-        set_land_yaw_hold_deg((float)(land_yaw_code % 360));
+    // param1 enables it, param2 is the heading (0 = north). Takes precedence over
+    // any CONDITION_YAW set earlier. If not enabled we leave the hold untouched so
+    // a landing with enable=0 uses stock weathervane yaw.
+    if (cmd.p1 & AP_Mission::VTOL_LAND_YAW_ENABLE) {
+        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
+        set_land_yaw_hold_deg((float)heading_deg);
     }
 
     plane.set_next_WP(cmd.content.location);
@@ -4828,9 +4830,10 @@ bool QuadPlane::landing_with_fixed_wing_spiral_approach(void) const
         return true;
     }
     
+    // note: NAV_VTOL_LAND param1 is repurposed as the landing heading-hold enable,
+    // so the fixed-wing spiral approach is selected via the Q_OPTIONS bit only.
     return ((cmd.id == MAV_CMD_NAV_VTOL_LAND) &&
-            (option_is_set(QuadPlane::Option::MISSION_LAND_FW_APPROACH) ||
-             (cmd.p1 & AP_Mission::VTOL_LAND_OPTIONS_MASK) == NAV_VTOL_LAND_OPTIONS_FW_SPIRAL_APPROACH));
+            option_is_set(QuadPlane::Option::MISSION_LAND_FW_APPROACH));
 }
 
 /*
