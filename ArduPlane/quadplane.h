@@ -118,6 +118,12 @@ public:
 
     bool do_vtol_takeoff(const AP_Mission::Mission_Command& cmd);
     bool do_vtol_land(const AP_Mission::Mission_Command& cmd);
+
+    // commanded heading hold during a VTOL landing (set from a CONDITION_YAW
+    // mission item placed just before NAV_VTOL_LAND). heading is absolute, deg from north.
+    void set_land_yaw_hold_deg(float heading_deg) { land_yaw_hold_active = true; land_yaw_target_deg = wrap_360(heading_deg); }
+    void clear_land_yaw_hold(void) { land_yaw_hold_active = false; }
+    bool land_yaw_hold(void) const;
     bool verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd);
     bool verify_vtol_land(void);
     bool in_vtol_auto(void) const;
@@ -619,6 +625,10 @@ private:
     uint32_t takeoff_time_limit_ms;
 
     float last_land_final_agl_m;
+
+    // commanded heading hold during VTOL landing
+    bool land_yaw_hold_active{false};
+    float land_yaw_target_deg{0};
 
     // AHRS alt for land abort and package place, meters
     float land_descend_start_alt_m;

@@ -2711,6 +2711,12 @@ void QuadPlane::vtol_position_controller(void)
         // setup scaling of roll and pitch angle P gains to match fixed wing gains
         setup_rp_fw_angle_gains();
 
+        // if a commanded heading hold is active for this VTOL landing, force the
+        // absolute-heading branch to use our commanded heading
+        if (land_yaw_hold()) {
+            have_target_yaw = true;
+            target_yaw_deg = land_yaw_target_deg;
+        }
         if (have_target_yaw) {
             attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
                                                                plane.nav_pitch_cd,
@@ -2762,9 +2768,15 @@ void QuadPlane::vtol_position_controller(void)
 
         // call attitude controller
         set_pilot_yaw_rate_time_constant();
-        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
-                                                                      plane.nav_pitch_cd,
-                                                                      get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+        if (land_yaw_hold()) {
+            attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
+                                                               plane.nav_pitch_cd,
+                                                               land_yaw_target_deg * 100, true);
+        } else {
+            attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
+                                                                          plane.nav_pitch_cd,
+                                                                          get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+        }
         break;
     }
 
@@ -2805,9 +2817,15 @@ void QuadPlane::vtol_position_controller(void)
 
         // call attitude controller
         set_pilot_yaw_rate_time_constant();
-        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
+        if (land_yaw_hold()) {
+            attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
+                                                               plane.nav_pitch_cd,
+                                                               land_yaw_target_deg * 100, true);
+        } else {
+            attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
                                                                       plane.nav_pitch_cd,
                                                                       get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+        }
         break;
 
     case QPOS_LAND_COMPLETE:
@@ -3372,6 +3390,9 @@ void QuadPlane::control_auto(void)
  */
 bool QuadPlane::do_vtol_takeoff(const AP_Mission::Mission_Command& cmd)
 {
+    // a fresh takeoff clears any previously commanded landing heading hold
+    clear_land_yaw_hold();
+
     if (!setup()) {
         return false;
     }
@@ -3904,6 +3925,16 @@ float QuadPlane::forward_throttle_pct()
 }
 
 /*
+  return true if we should hold the commanded heading during a VTOL landing.
+  only active while actually in the VTOL land sequence so it never affects
+  guided repositioning, QRTL, or normal weathervaning.
+ */
+bool QuadPlane::land_yaw_hold(void) const
+{
+    return land_yaw_hold_active && in_vtol_land_sequence();
+}
+
+/*
   get weathervaning yaw rate in cd/s
  */
 float QuadPlane::get_weathervane_yaw_rate_cds(void)
@@ -3920,7 +3951,8 @@ float QuadPlane::get_weathervane_yaw_rate_cds(void)
         plane.control_mode == &plane.mode_qautotune ||
 #endif
         plane.control_mode == &plane.mode_qhover ||
-        should_relax()
+        should_relax() ||
+        land_yaw_hold()
         ) {
         // Ensure the weathervane controller is reset to prevent weathervaning from happening outside of the timer
         weathervane->reset();

@@ -124,6 +124,15 @@ bool Plane::start_command(const AP_Mission::Mission_Command& cmd)
         do_within_distance(cmd);
         break;
 
+#if HAL_QUADPLANE_ENABLED
+    case MAV_CMD_CONDITION_YAW:
+        // store a commanded absolute heading (param1/angle_deg) to be held
+        // through a following NAV_VTOL_LAND. Presence of this command is the
+        // on/off switch; with no CONDITION_YAW the landing yaws normally.
+        quadplane.set_land_yaw_hold_deg(cmd.content.yaw.angle_deg);
+        break;
+#endif
+
     // Do commands
 
     case MAV_CMD_DO_CHANGE_SPEED:
@@ -296,6 +305,12 @@ bool Plane::verify_command(const AP_Mission::Mission_Command& cmd)        // Ret
 
     case MAV_CMD_CONDITION_DISTANCE:
         return verify_within_distance();
+
+#if HAL_QUADPLANE_ENABLED
+    case MAV_CMD_CONDITION_YAW:
+        // heading target is stored immediately; nothing to wait for
+        return true;
+#endif
 
 #if AP_SCRIPTING_ENABLED
     case MAV_CMD_NAV_SCRIPT_TIME:
