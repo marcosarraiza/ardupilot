@@ -1,0 +1,159 @@
+From f8e078d9835e31819a28758a0eba8274091d8700 Mon Sep 17 00:00:00 2001
+From: Marcos <marcosfermin7@gmail.com>
+Date: Thu, 2 Jul 2026 16:17:29 -0400
+Subject: [PATCH 1/2] NAV_VTOL_LAND heading: explicit enable + 0=north
+
+Use param1 as an explicit enable and param2 as the heading (0 = north),
+instead of overloading param2 (where 0 previously meant disabled). This
+lets the aircraft be commanded to true north.
+
+  param1 = 0  -> heading hold off (stock weathervane landing yaw)
+  param1 != 0 -> hold param2 as an absolute heading (0..359, 0 = north)
+
+Packing in p1: bit 0 = enable, bits 1..9 = heading. As param1 is now the
+enable, the fixed-wing spiral approach on NAV_VTOL_LAND is selected via the
+Q_OPTIONS MISSION_LAND_FW_APPROACH bit only.
+---
+ ArduPlane/quadplane.cpp             | 15 +++++++++------
+ libraries/AP_Mission/AP_Mission.cpp | 21 +++++++++------------
+ libraries/AP_Mission/AP_Mission.h   | 17 ++++++++---------
+ 3 files changed, 26 insertions(+), 27 deletions(-)
+
+diff --git a/ArduPlane/quadplane.cpp b/ArduPlane/quadplane.cpp
+index fc82337..6a3e93f 100644
+--- a/ArduPlane/quadplane.cpp
++++ b/ArduPlane/quadplane.cpp
+@@ -3464,10 +3464,12 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
+     }
+ 
+     // optional commanded landing heading packed into p1 (see AP_Mission p1 encoding).
+-    // if present it takes precedence over any CONDITION_YAW set earlier.
+-    const uint16_t land_yaw_code = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
+-    if (land_yaw_code != 0) {
+-        set_land_yaw_hold_deg((float)(land_yaw_code % 360));
++    // param1 enables it, param2 is the heading (0 = north). Takes precedence over
++    // any CONDITION_YAW set earlier. If not enabled we leave the hold untouched so
++    // a landing with enable=0 uses stock weathervane yaw.
++    if (cmd.p1 & AP_Mission::VTOL_LAND_YAW_ENABLE) {
++        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
++        set_land_yaw_hold_deg((float)heading_deg);
+     }
+ 
+     plane.set_next_WP(cmd.content.location);
+@@ -4828,9 +4830,10 @@ bool QuadPlane::landing_with_fixed_wing_spiral_approach(void) const
+         return true;
+     }
+     
++    // note: NAV_VTOL_LAND param1 is repurposed as the landing heading-hold enable,
++    // so the fixed-wing spiral approach is selected via the Q_OPTIONS bit only.
+     return ((cmd.id == MAV_CMD_NAV_VTOL_LAND) &&
+-            (option_is_set(QuadPlane::Option::MISSION_LAND_FW_APPROACH) ||
+-             (cmd.p1 & AP_Mission::VTOL_LAND_OPTIONS_MASK) == NAV_VTOL_LAND_OPTIONS_FW_SPIRAL_APPROACH));
++            option_is_set(QuadPlane::Option::MISSION_LAND_FW_APPROACH));
+ }
+ 
+ /*
+diff --git a/libraries/AP_Mission/AP_Mission.cpp b/libraries/AP_Mission/AP_Mission.cpp
+index 2608723..d0cc716 100644
+--- a/libraries/AP_Mission/AP_Mission.cpp
++++ b/libraries/AP_Mission/AP_Mission.cpp
+@@ -1356,12 +1356,12 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_LAND:
+-        cmd.p1 = ((uint16_t)packet.param1) & VTOL_LAND_OPTIONS_MASK;
+-        // optional commanded landing heading in param2 (degrees). 0/blank = off,
+-        // 1..360 = hold that absolute heading through the descent (enter 360 for north).
+-        if (is_positive(packet.param2)) {
+-            const uint16_t yaw_code = (uint16_t)constrain_float(roundf(packet.param2), 1, 360);
+-            cmd.p1 |= (yaw_code & VTOL_LAND_YAW_MASK) << VTOL_LAND_YAW_SHIFT;
++        // param1 = enable (0 = off / stock weathervane, non-zero = hold heading)
++        // param2 = commanded landing heading in degrees (0 = north, 0..359)
++        cmd.p1 = 0;
++        if (!is_zero(packet.param1)) {
++            const uint16_t heading_deg = (uint16_t)constrain_float(roundf(wrap_360(packet.param2)), 0, 359);
++            cmd.p1 = VTOL_LAND_YAW_ENABLE | ((heading_deg & VTOL_LAND_YAW_MASK) << VTOL_LAND_YAW_SHIFT);
+         }
+         break;
+ 
+@@ -1902,12 +1902,9 @@ bool AP_Mission::mission_cmd_to_mavlink_int(const AP_Mission::Mission_Command& c
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_LAND:
+-        packet.param1 = cmd.p1 & VTOL_LAND_OPTIONS_MASK;
+-        {
+-            const uint16_t yaw_code = (cmd.p1 >> VTOL_LAND_YAW_SHIFT) & VTOL_LAND_YAW_MASK;
+-            if (yaw_code != 0) {
+-                packet.param2 = yaw_code;
+-            }
++        if (cmd.p1 & VTOL_LAND_YAW_ENABLE) {
++            packet.param1 = 1;
++            packet.param2 = (cmd.p1 >> VTOL_LAND_YAW_SHIFT) & VTOL_LAND_YAW_MASK;
+         }
+         break;
+ 
+diff --git a/libraries/AP_Mission/AP_Mission.h b/libraries/AP_Mission/AP_Mission.h
+index 9d821ce..f862e4d 100644
+--- a/libraries/AP_Mission/AP_Mission.h
++++ b/libraries/AP_Mission/AP_Mission.h
+@@ -466,15 +466,14 @@ public:
+ 
+     // Encoding of Mission_Command::p1 for MAV_CMD_NAV_VTOL_LAND.
+     // p1 is the only spare field on a location-type command (the 12 content
+-    // bytes are consumed by lat/lon/alt), so we share it: the low 3 bits keep
+-    // NAV_VTOL_LAND_OPTIONS and the next 9 bits carry an optional commanded
+-    // landing heading.
+-    //   yaw code 0       = disabled (stock landing yaw behaviour)
+-    //   yaw code 1..360  = hold this absolute heading through the descent
+-    //                      (enter 360 for due north; applied as code % 360)
+-    static constexpr uint16_t VTOL_LAND_OPTIONS_MASK = 0x0007;
+-    static constexpr uint8_t  VTOL_LAND_YAW_SHIFT    = 3;
+-    static constexpr uint16_t VTOL_LAND_YAW_MASK     = 0x01FF;
++    // bytes are consumed by lat/lon/alt), so we pack the commanded landing
++    // heading into it:
++    //   MAVLink param1 (enable) -> bit 0. 0 = off (stock weathervane yaw),
++    //                                     non-zero = hold the commanded heading.
++    //   MAVLink param2 (heading, deg) -> bits 1..9. 0 = north, valid 0..359.
++    static constexpr uint16_t VTOL_LAND_YAW_ENABLE = 0x0001;
++    static constexpr uint8_t  VTOL_LAND_YAW_SHIFT  = 1;
++    static constexpr uint16_t VTOL_LAND_YAW_MASK   = 0x01FF;
+ 
+ 
+     // main program function pointers
+-- 
+2.34.1
+
+
+From 77ce774a15b3e306a8ab8a437a294ac30d5c34fd Mon Sep 17 00:00:00 2001
+From: Marcos <marcosfermin7@gmail.com>
+Date: Thu, 2 Jul 2026 16:18:52 -0400
+Subject: [PATCH 2/2] NAV_VTOL_LAND heading: hold only during vertical descent
+
+Scope the heading hold to in_vtol_land_descent() (LAND_DESCEND / LAND_FINAL
+/ LAND_ABORT) instead of the whole land sequence. The aircraft now flies the
+POSITION1/POSITION2 approach with normal yaw and only rotates to the
+commanded heading as it begins the vertical descent.
+---
+ ArduPlane/quadplane.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/ArduPlane/quadplane.cpp b/ArduPlane/quadplane.cpp
+index 6a3e93f..97a0547 100644
+--- a/ArduPlane/quadplane.cpp
++++ b/ArduPlane/quadplane.cpp
+@@ -3940,7 +3940,11 @@ float QuadPlane::forward_throttle_pct()
+  */
+ bool QuadPlane::land_yaw_hold(void) const
+ {
+-    return land_yaw_hold_active && in_vtol_land_sequence();
++    // only hold the commanded heading once we are actually descending
++    // (LAND_DESCEND / LAND_FINAL / LAND_ABORT). During the POSITION1/POSITION2
++    // approach the aircraft yaws normally and only rotates to the commanded
++    // heading as it starts coming down.
++    return land_yaw_hold_active && in_vtol_land_descent();
+ }
+ 
+ /*
+-- 
+2.34.1
+

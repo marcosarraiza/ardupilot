@@ -1,0 +1,297 @@
+From ff83d6cf30cdbd4bf7d945c26f0fbbe0593dacb3 Mon Sep 17 00:00:00 2001
+From: Marcos <marcosfermin7@gmail.com>
+Date: Thu, 2 Jul 2026 15:26:37 -0400
+Subject: [PATCH 1/2] QuadPlane: hold commanded heading through VTOL landing
+
+Add an absolute-heading hold for tiltrotor/quadplane VTOL landings, driven
+by a CONDITION_YAW mission item placed just before NAV_VTOL_LAND.
+
+- commands_logic.cpp: handle MAV_CMD_CONDITION_YAW in AUTO (stores the
+  commanded absolute heading; presence of the item is the on/off switch).
+- quadplane.h/.cpp: new land_yaw_hold state + helper. When active during the
+  VTOL land sequence, POSITION1/POSITION2/LAND_DESCEND/LAND_FINAL all command
+  the commanded absolute heading instead of pointing at the landing point or
+  weathervaning. Weathervane yaw rate is suppressed while the hold is active.
+  Hold is cleared on each VTOL takeoff so it never leaks between missions.
+---
+ ArduPlane/commands_logic.cpp | 15 +++++++++++++
+ ArduPlane/quadplane.cpp      | 42 +++++++++++++++++++++++++++++++-----
+ ArduPlane/quadplane.h        | 10 +++++++++
+ 3 files changed, 62 insertions(+), 5 deletions(-)
+
+diff --git a/ArduPlane/commands_logic.cpp b/ArduPlane/commands_logic.cpp
+index a4237dd..3c4e44f 100644
+--- a/ArduPlane/commands_logic.cpp
++++ b/ArduPlane/commands_logic.cpp
+@@ -124,6 +124,15 @@ bool Plane::start_command(const AP_Mission::Mission_Command& cmd)
+         do_within_distance(cmd);
+         break;
+ 
++#if HAL_QUADPLANE_ENABLED
++    case MAV_CMD_CONDITION_YAW:
++        // store a commanded absolute heading (param1/angle_deg) to be held
++        // through a following NAV_VTOL_LAND. Presence of this command is the
++        // on/off switch; with no CONDITION_YAW the landing yaws normally.
++        quadplane.set_land_yaw_hold_deg(cmd.content.yaw.angle_deg);
++        break;
++#endif
++
+     // Do commands
+ 
+     case MAV_CMD_DO_CHANGE_SPEED:
+@@ -297,6 +306,12 @@ bool Plane::verify_command(const AP_Mission::Mission_Command& cmd)        // Ret
+     case MAV_CMD_CONDITION_DISTANCE:
+         return verify_within_distance();
+ 
++#if HAL_QUADPLANE_ENABLED
++    case MAV_CMD_CONDITION_YAW:
++        // heading target is stored immediately; nothing to wait for
++        return true;
++#endif
++
+ #if AP_SCRIPTING_ENABLED
+     case MAV_CMD_NAV_SCRIPT_TIME:
+         return verify_nav_script_time(cmd);
+diff --git a/ArduPlane/quadplane.cpp b/ArduPlane/quadplane.cpp
+index 57f3c89..3257cdf 100644
+--- a/ArduPlane/quadplane.cpp
++++ b/ArduPlane/quadplane.cpp
+@@ -2711,6 +2711,12 @@ void QuadPlane::vtol_position_controller(void)
+         // setup scaling of roll and pitch angle P gains to match fixed wing gains
+         setup_rp_fw_angle_gains();
+ 
++        // if a commanded heading hold is active for this VTOL landing, force the
++        // absolute-heading branch to use our commanded heading
++        if (land_yaw_hold()) {
++            have_target_yaw = true;
++            target_yaw_deg = land_yaw_target_deg;
++        }
+         if (have_target_yaw) {
+             attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
+                                                                plane.nav_pitch_cd,
+@@ -2762,9 +2768,15 @@ void QuadPlane::vtol_position_controller(void)
+ 
+         // call attitude controller
+         set_pilot_yaw_rate_time_constant();
+-        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
+-                                                                      plane.nav_pitch_cd,
+-                                                                      get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
++        if (land_yaw_hold()) {
++            attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
++                                                               plane.nav_pitch_cd,
++                                                               land_yaw_target_deg * 100, true);
++        } else {
++            attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
++                                                                          plane.nav_pitch_cd,
++                                                                          get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
++        }
+         break;
+     }
+ 
+@@ -2805,9 +2817,15 @@ void QuadPlane::vtol_position_controller(void)
+ 
+         // call attitude controller
+         set_pilot_yaw_rate_time_constant();
+-        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
++        if (land_yaw_hold()) {
++            attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
++                                                               plane.nav_pitch_cd,
++                                                               land_yaw_target_deg * 100, true);
++        } else {
++            attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
+                                                                       plane.nav_pitch_cd,
+                                                                       get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
++        }
+         break;
+ 
+     case QPOS_LAND_COMPLETE:
+@@ -3372,6 +3390,9 @@ void QuadPlane::control_auto(void)
+  */
+ bool QuadPlane::do_vtol_takeoff(const AP_Mission::Mission_Command& cmd)
+ {
++    // a fresh takeoff clears any previously commanded landing heading hold
++    clear_land_yaw_hold();
++
+     if (!setup()) {
+         return false;
+     }
+@@ -3903,6 +3924,16 @@ float QuadPlane::forward_throttle_pct()
+     return vel_forward.last_pct;
+ }
+ 
++/*
++  return true if we should hold the commanded heading during a VTOL landing.
++  only active while actually in the VTOL land sequence so it never affects
++  guided repositioning, QRTL, or normal weathervaning.
++ */
++bool QuadPlane::land_yaw_hold(void) const
++{
++    return land_yaw_hold_active && in_vtol_land_sequence();
++}
++
+ /*
+   get weathervaning yaw rate in cd/s
+  */
+@@ -3920,7 +3951,8 @@ float QuadPlane::get_weathervane_yaw_rate_cds(void)
+         plane.control_mode == &plane.mode_qautotune ||
+ #endif
+         plane.control_mode == &plane.mode_qhover ||
+-        should_relax()
++        should_relax() ||
++        land_yaw_hold()
+         ) {
+         // Ensure the weathervane controller is reset to prevent weathervaning from happening outside of the timer
+         weathervane->reset();
+diff --git a/ArduPlane/quadplane.h b/ArduPlane/quadplane.h
+index eb06018..50cd3b5 100644
+--- a/ArduPlane/quadplane.h
++++ b/ArduPlane/quadplane.h
+@@ -118,6 +118,12 @@ public:
+ 
+     bool do_vtol_takeoff(const AP_Mission::Mission_Command& cmd);
+     bool do_vtol_land(const AP_Mission::Mission_Command& cmd);
++
++    // commanded heading hold during a VTOL landing (set from a CONDITION_YAW
++    // mission item placed just before NAV_VTOL_LAND). heading is absolute, deg from north.
++    void set_land_yaw_hold_deg(float heading_deg) { land_yaw_hold_active = true; land_yaw_target_deg = wrap_360(heading_deg); }
++    void clear_land_yaw_hold(void) { land_yaw_hold_active = false; }
++    bool land_yaw_hold(void) const;
+     bool verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd);
+     bool verify_vtol_land(void);
+     bool in_vtol_auto(void) const;
+@@ -620,6 +626,10 @@ private:
+ 
+     float last_land_final_agl_m;
+ 
++    // commanded heading hold during VTOL landing
++    bool land_yaw_hold_active{false};
++    float land_yaw_target_deg{0};
++
+     // AHRS alt for land abort and package place, meters
+     float land_descend_start_alt_m;
+ 
+-- 
+2.34.1
+
+
+From 0c842f70744c464d0d393014f5eb46bf06d44cbb Mon Sep 17 00:00:00 2001
+From: Marcos <marcosfermin7@gmail.com>
+Date: Thu, 2 Jul 2026 15:40:43 -0400
+Subject: [PATCH 2/2] AP_Mission/QuadPlane: optional commanded heading on
+ NAV_VTOL_LAND
+
+Let a heading be commanded directly on the NAV_VTOL_LAND mission item via
+its param2 (the box Mission Planner leaves blank), as an alternative to a
+separate CONDITION_YAW item.
+
+NAV_VTOL_LAND is stored as a location, so its 12 content bytes are full
+(lat/lon/alt) and the 16-bit p1 is the only spare field. p1 is shared:
+low 3 bits keep NAV_VTOL_LAND_OPTIONS, next 9 bits carry an optional
+landing heading (0 = off, 1..360 = hold that heading, 360 = north).
+
+- AP_Mission: parse param2 into the p1 yaw bits, encode it back for GCS
+  read-back, allow param2 to be NaN (blank), add shared bit-layout constants.
+- quadplane: do_vtol_land decodes the heading and engages the existing
+  land_yaw_hold; options read site masks to the low 3 bits.
+---
+ ArduPlane/quadplane.cpp             |  9 ++++++++-
+ libraries/AP_Mission/AP_Mission.cpp | 18 +++++++++++++++---
+ libraries/AP_Mission/AP_Mission.h   | 12 ++++++++++++
+ 3 files changed, 35 insertions(+), 4 deletions(-)
+
+diff --git a/ArduPlane/quadplane.cpp b/ArduPlane/quadplane.cpp
+index 3257cdf..fc82337 100644
+--- a/ArduPlane/quadplane.cpp
++++ b/ArduPlane/quadplane.cpp
+@@ -3463,6 +3463,13 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
+         return false;
+     }
+ 
++    // optional commanded landing heading packed into p1 (see AP_Mission p1 encoding).
++    // if present it takes precedence over any CONDITION_YAW set earlier.
++    const uint16_t land_yaw_code = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
++    if (land_yaw_code != 0) {
++        set_land_yaw_hold_deg((float)(land_yaw_code % 360));
++    }
++
+     plane.set_next_WP(cmd.content.location);
+     // initially aim for current altitude
+     plane.next_WP_loc.copy_alt_from(plane.current_loc);
+@@ -4823,7 +4830,7 @@ bool QuadPlane::landing_with_fixed_wing_spiral_approach(void) const
+     
+     return ((cmd.id == MAV_CMD_NAV_VTOL_LAND) &&
+             (option_is_set(QuadPlane::Option::MISSION_LAND_FW_APPROACH) ||
+-             cmd.p1 == NAV_VTOL_LAND_OPTIONS_FW_SPIRAL_APPROACH));
++             (cmd.p1 & AP_Mission::VTOL_LAND_OPTIONS_MASK) == NAV_VTOL_LAND_OPTIONS_FW_SPIRAL_APPROACH));
+ }
+ 
+ /*
+diff --git a/libraries/AP_Mission/AP_Mission.cpp b/libraries/AP_Mission/AP_Mission.cpp
+index b24955e..2608723 100644
+--- a/libraries/AP_Mission/AP_Mission.cpp
++++ b/libraries/AP_Mission/AP_Mission.cpp
+@@ -1040,7 +1040,7 @@ MAV_MISSION_RESULT AP_Mission::sanity_check_params(const mavlink_mission_item_in
+         nan_mask = ~(1 << 3); // param 4 can be nan
+         break;
+     case MAV_CMD_NAV_VTOL_LAND:
+-        nan_mask = ~((1 << 2) | (1 << 3)); // param 3 and 4 can be nan
++        nan_mask = ~((1 << 1) | (1 << 2) | (1 << 3)); // param 2 (heading), 3 and 4 can be nan
+         break;
+     default:
+         nan_mask = 0xff;
+@@ -1356,7 +1356,13 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_LAND:
+-        cmd.p1 = (NAV_VTOL_LAND_OPTIONS)packet.param1;
++        cmd.p1 = ((uint16_t)packet.param1) & VTOL_LAND_OPTIONS_MASK;
++        // optional commanded landing heading in param2 (degrees). 0/blank = off,
++        // 1..360 = hold that absolute heading through the descent (enter 360 for north).
++        if (is_positive(packet.param2)) {
++            const uint16_t yaw_code = (uint16_t)constrain_float(roundf(packet.param2), 1, 360);
++            cmd.p1 |= (yaw_code & VTOL_LAND_YAW_MASK) << VTOL_LAND_YAW_SHIFT;
++        }
+         break;
+ 
+     case MAV_CMD_DO_VTOL_TRANSITION:
+@@ -1896,7 +1902,13 @@ bool AP_Mission::mission_cmd_to_mavlink_int(const AP_Mission::Mission_Command& c
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_LAND:
+-        packet.param1 = cmd.p1;
++        packet.param1 = cmd.p1 & VTOL_LAND_OPTIONS_MASK;
++        {
++            const uint16_t yaw_code = (cmd.p1 >> VTOL_LAND_YAW_SHIFT) & VTOL_LAND_YAW_MASK;
++            if (yaw_code != 0) {
++                packet.param2 = yaw_code;
++            }
++        }
+         break;
+ 
+     case MAV_CMD_DO_VTOL_TRANSITION:
+diff --git a/libraries/AP_Mission/AP_Mission.h b/libraries/AP_Mission/AP_Mission.h
+index 1465dd1..9d821ce 100644
+--- a/libraries/AP_Mission/AP_Mission.h
++++ b/libraries/AP_Mission/AP_Mission.h
+@@ -464,6 +464,18 @@ public:
+         }
+     };
+ 
++    // Encoding of Mission_Command::p1 for MAV_CMD_NAV_VTOL_LAND.
++    // p1 is the only spare field on a location-type command (the 12 content
++    // bytes are consumed by lat/lon/alt), so we share it: the low 3 bits keep
++    // NAV_VTOL_LAND_OPTIONS and the next 9 bits carry an optional commanded
++    // landing heading.
++    //   yaw code 0       = disabled (stock landing yaw behaviour)
++    //   yaw code 1..360  = hold this absolute heading through the descent
++    //                      (enter 360 for due north; applied as code % 360)
++    static constexpr uint16_t VTOL_LAND_OPTIONS_MASK = 0x0007;
++    static constexpr uint8_t  VTOL_LAND_YAW_SHIFT    = 3;
++    static constexpr uint16_t VTOL_LAND_YAW_MASK     = 0x01FF;
++
+ 
+     // main program function pointers
+     FUNCTOR_TYPEDEF(mission_cmd_fn_t, bool, const Mission_Command&);
+-- 
+2.34.1
+
