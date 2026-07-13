@@ -124,6 +124,12 @@ public:
     void set_land_yaw_hold_deg(float heading_deg) { land_yaw_hold_active = true; land_yaw_target_deg = wrap_360(heading_deg); }
     void clear_land_yaw_hold(void) { land_yaw_hold_active = false; }
     bool land_yaw_hold(void) const;
+
+    // commanded heading during a VTOL takeoff (set from NAV_VTOL_TAKEOFF param1/param2).
+    // held through the climb and released at the next waypoint.
+    void set_takeoff_yaw_hold_deg(float heading_deg) { takeoff_yaw_hold_active = true; takeoff_yaw_target_deg = wrap_360(heading_deg); }
+    void clear_takeoff_yaw_hold(void) { takeoff_yaw_hold_active = false; }
+    bool takeoff_yaw_hold(void) const;
     bool verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd);
     bool verify_vtol_land(void);
     bool in_vtol_auto(void) const;
@@ -629,6 +635,11 @@ private:
     // commanded heading hold during VTOL landing
     bool land_yaw_hold_active{false};
     float land_yaw_target_deg{0};
+
+    // commanded heading during VTOL takeoff (released at next waypoint)
+    bool takeoff_yaw_hold_active{false};
+    float takeoff_yaw_target_deg{0};
+    uint32_t takeoff_yaw_alt_reached_ms{0};
 
     // AHRS alt for land abort and package place, meters
     float land_descend_start_alt_m;

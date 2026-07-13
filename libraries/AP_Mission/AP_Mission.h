@@ -464,16 +464,18 @@ public:
         }
     };
 
-    // Encoding of Mission_Command::p1 for MAV_CMD_NAV_VTOL_LAND.
-    // p1 is the only spare field on a location-type command (the 12 content
-    // bytes are consumed by lat/lon/alt), so we pack the commanded landing
-    // heading into it:
+    // Encoding of Mission_Command::p1 for MAV_CMD_NAV_VTOL_LAND and
+    // MAV_CMD_NAV_VTOL_TAKEOFF. p1 is the only spare field on a location-type
+    // command (the 12 content bytes are consumed by lat/lon/alt), so we pack a
+    // commanded yaw into it:
     //   MAVLink param1 (enable) -> bit 0. 0 = off (stock weathervane yaw),
-    //                                     non-zero = hold the commanded heading.
+    //                                     non-zero = command the yaw.
     //   MAVLink param2 (heading, deg) -> bits 1..9. 0 = north, valid 0..359.
-    static constexpr uint16_t VTOL_LAND_YAW_ENABLE = 0x0001;
-    static constexpr uint8_t  VTOL_LAND_YAW_SHIFT  = 1;
-    static constexpr uint16_t VTOL_LAND_YAW_MASK   = 0x01FF;
+    // For LAND the heading is held through the descent; for TAKEOFF it is held
+    // through the climb and released at the next waypoint.
+    static constexpr uint16_t VTOL_YAW_ENABLE = 0x0001;
+    static constexpr uint8_t  VTOL_YAW_SHIFT  = 1;
+    static constexpr uint16_t VTOL_YAW_MASK   = 0x01FF;
 
 
     // main program function pointers

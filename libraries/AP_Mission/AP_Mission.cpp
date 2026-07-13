@@ -1037,7 +1037,7 @@ MAV_MISSION_RESULT AP_Mission::sanity_check_params(const mavlink_mission_item_in
         nan_mask = ~((1 << 1) | (1 << 2) | (1 << 3)); // param 2,3 & 4 can be nan
         break;
     case MAV_CMD_NAV_VTOL_TAKEOFF:
-        nan_mask = ~(1 << 3); // param 4 can be nan
+        nan_mask = ~((1 << 1) | (1 << 3)); // param 2 (heading) and 4 can be nan
         break;
     case MAV_CMD_NAV_VTOL_LAND:
         nan_mask = ~((1 << 1) | (1 << 2) | (1 << 3)); // param 2 (heading), 3 and 4 can be nan
@@ -1353,6 +1353,14 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
         break;
 
     case MAV_CMD_NAV_VTOL_TAKEOFF:
+        // param1 = enable (0 = off / stock takeoff yaw, non-zero = command yaw)
+        // param2 = commanded takeoff heading in degrees (0 = north, 0..359).
+        // held through the climb only, released at the next waypoint.
+        cmd.p1 = 0;
+        if (!is_zero(packet.param1)) {
+            const uint16_t heading_deg = (uint16_t)constrain_float(roundf(wrap_360(packet.param2)), 0, 359);
+            cmd.p1 = VTOL_YAW_ENABLE | ((heading_deg & VTOL_YAW_MASK) << VTOL_YAW_SHIFT);
+        }
         break;
 
     case MAV_CMD_NAV_VTOL_LAND:
@@ -1361,7 +1369,7 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
         cmd.p1 = 0;
         if (!is_zero(packet.param1)) {
             const uint16_t heading_deg = (uint16_t)constrain_float(roundf(wrap_360(packet.param2)), 0, 359);
-            cmd.p1 = VTOL_LAND_YAW_ENABLE | ((heading_deg & VTOL_LAND_YAW_MASK) << VTOL_LAND_YAW_SHIFT);
+            cmd.p1 = VTOL_YAW_ENABLE | ((heading_deg & VTOL_YAW_MASK) << VTOL_YAW_SHIFT);
         }
         break;
 
@@ -1899,12 +1907,16 @@ bool AP_Mission::mission_cmd_to_mavlink_int(const AP_Mission::Mission_Command& c
         break;
 
     case MAV_CMD_NAV_VTOL_TAKEOFF:
+        if (cmd.p1 & VTOL_YAW_ENABLE) {
+            packet.param1 = 1;
+            packet.param2 = (cmd.p1 >> VTOL_YAW_SHIFT) & VTOL_YAW_MASK;
+        }
         break;
 
     case MAV_CMD_NAV_VTOL_LAND:
-        if (cmd.p1 & VTOL_LAND_YAW_ENABLE) {
+        if (cmd.p1 & VTOL_YAW_ENABLE) {
             packet.param1 = 1;
-            packet.param2 = (cmd.p1 >> VTOL_LAND_YAW_SHIFT) & VTOL_LAND_YAW_MASK;
+            packet.param2 = (cmd.p1 >> VTOL_YAW_SHIFT) & VTOL_YAW_MASK;
         }
         break;
 

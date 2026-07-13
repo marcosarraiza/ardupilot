@@ -3252,9 +3252,18 @@ void QuadPlane::takeoff_controller(void)
     run_xy_controller();
 
     set_pilot_yaw_rate_time_constant();
-    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
-                                                                  plane.nav_pitch_cd,
-                                                                  get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+    // only rotate to the commanded takeoff heading once we have reached the
+    // target takeoff altitude; climb straight up with normal yaw before that.
+    const bool at_takeoff_alt = plane.current_loc.alt >= plane.next_WP_loc.alt;
+    if (takeoff_yaw_hold() && at_takeoff_alt) {
+        attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
+                                                           plane.nav_pitch_cd,
+                                                           takeoff_yaw_target_deg * 100, true);
+    } else {
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
+                                                                      plane.nav_pitch_cd,
+                                                                      get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
+    }
 
     float vel_u_ms = wp_nav->get_default_speed_up_ms();
     if (plane.control_mode == &plane.mode_guided && guided_takeoff) {
@@ -3393,6 +3402,14 @@ bool QuadPlane::do_vtol_takeoff(const AP_Mission::Mission_Command& cmd)
     // a fresh takeoff clears any previously commanded landing heading hold
     clear_land_yaw_hold();
 
+    // optional commanded takeoff heading packed into p1 (param1 enable, param2
+    // heading, 0 = north). Held through the climb, released at the next waypoint.
+    clear_takeoff_yaw_hold();
+    if (cmd.p1 & AP_Mission::VTOL_YAW_ENABLE) {
+        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_YAW_SHIFT) & AP_Mission::VTOL_YAW_MASK;
+        set_takeoff_yaw_hold_deg((float)heading_deg);
+    }
+
     if (!setup()) {
         return false;
     }
@@ -3467,8 +3484,8 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
     // param1 enables it, param2 is the heading (0 = north). Takes precedence over
     // any CONDITION_YAW set earlier. If not enabled we leave the hold untouched so
     // a landing with enable=0 uses stock weathervane yaw.
-    if (cmd.p1 & AP_Mission::VTOL_LAND_YAW_ENABLE) {
-        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
+    if (cmd.p1 & AP_Mission::VTOL_YAW_ENABLE) {
+        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_YAW_SHIFT) & AP_Mission::VTOL_YAW_MASK;
         set_land_yaw_hold_deg((float)heading_deg);
     }
 
@@ -3532,7 +3549,20 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
 #endif
 
     if (plane.current_loc.alt < plane.next_WP_loc.alt) {
+        takeoff_yaw_alt_reached_ms = 0;
         return false;
+    }
+    // reached target altitude: if a takeoff heading was commanded, rotate to it
+    // before completing the takeoff (bounded wait so the mission cannot hang if
+    // the yaw loop lacks the authority to get there)
+    if (takeoff_yaw_hold()) {
+        if (takeoff_yaw_alt_reached_ms == 0) {
+            takeoff_yaw_alt_reached_ms = now;
+        }
+        const float yaw_err_deg = fabsf(wrap_180(takeoff_yaw_target_deg - plane.ahrs.get_yaw_deg()));
+        if (yaw_err_deg > 5.0f && (now - takeoff_yaw_alt_reached_ms) < 10000) {
+            return false;
+        }
     }
     transition->restart();
     plane.TECS_controller.set_pitch_max(transition_pitch_max);
@@ -3948,6 +3978,17 @@ bool QuadPlane::land_yaw_hold(void) const
 }
 
 /*
+  return true if we should command the heading during a VTOL takeoff.
+  scoped to the active NAV_VTOL_TAKEOFF command so it releases automatically
+  once the mission advances to the next waypoint.
+ */
+bool QuadPlane::takeoff_yaw_hold(void) const
+{
+    return takeoff_yaw_hold_active && in_vtol_auto() &&
+           is_vtol_takeoff(plane.mission.get_current_nav_cmd().id);
+}
+
+/*
   get weathervaning yaw rate in cd/s
  */
 float QuadPlane::get_weathervane_yaw_rate_cds(void)
@@ -3965,7 +4006,8 @@ float QuadPlane::get_weathervane_yaw_rate_cds(void)
 #endif
         plane.control_mode == &plane.mode_qhover ||
         should_relax() ||
-        land_yaw_hold()
+        land_yaw_hold() ||
+        takeoff_yaw_hold()
         ) {
         // Ensure the weathervane controller is reset to prevent weathervaning from happening outside of the timer
         weathervane->reset();
