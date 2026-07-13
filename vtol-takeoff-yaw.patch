@@ -1,0 +1,246 @@
+From cf09b72704dffa3553e14ac81dea2a57f213ff5a Mon Sep 17 00:00:00 2001
+From: Marcos <marcosfermin7@gmail.com>
+Date: Sun, 12 Jul 2026 21:42:26 -0400
+Subject: [PATCH] NAV_VTOL_TAKEOFF: optional commanded takeoff heading
+
+Add the same param-based yaw control to VTOL takeoff as VTOL land.
+
+  param1 = 0  -> stock takeoff yaw
+  param1 != 0 -> command param2 as the heading (0 = north)
+
+The aircraft climbs straight up with normal yaw and only rotates to the
+commanded heading once it reaches the target takeoff altitude; the takeoff
+does not complete until the heading is reached (bounded 10s wait so it can
+never hang). It then advances to the next waypoint, which releases the hold.
+
+Shared p1 encoding with NAV_VTOL_LAND (constants renamed VTOL_YAW_*). The
+hold is scoped to the active NAV_VTOL_TAKEOFF command via takeoff_yaw_hold().
+Weathervane is suppressed while it is active.
+---
+ ArduPlane/quadplane.cpp             | 54 +++++++++++++++++++++++++----
+ ArduPlane/quadplane.h               | 11 ++++++
+ libraries/AP_Mission/AP_Mission.cpp | 20 ++++++++---
+ libraries/AP_Mission/AP_Mission.h   | 18 +++++-----
+ 4 files changed, 85 insertions(+), 18 deletions(-)
+
+diff --git a/ArduPlane/quadplane.cpp b/ArduPlane/quadplane.cpp
+index 97a0547..31a521d 100644
+--- a/ArduPlane/quadplane.cpp
++++ b/ArduPlane/quadplane.cpp
+@@ -3252,9 +3252,18 @@ void QuadPlane::takeoff_controller(void)
+     run_xy_controller();
+ 
+     set_pilot_yaw_rate_time_constant();
+-    attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
+-                                                                  plane.nav_pitch_cd,
+-                                                                  get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
++    // only rotate to the commanded takeoff heading once we have reached the
++    // target takeoff altitude; climb straight up with normal yaw before that.
++    const bool at_takeoff_alt = plane.current_loc.alt >= plane.next_WP_loc.alt;
++    if (takeoff_yaw_hold() && at_takeoff_alt) {
++        attitude_control->input_euler_angle_roll_pitch_yaw_cd(plane.nav_roll_cd,
++                                                           plane.nav_pitch_cd,
++                                                           takeoff_yaw_target_deg * 100, true);
++    } else {
++        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw_cd(plane.nav_roll_cd,
++                                                                      plane.nav_pitch_cd,
++                                                                      get_pilot_input_yaw_rate_cds() + get_weathervane_yaw_rate_cds());
++    }
+ 
+     float vel_u_ms = wp_nav->get_default_speed_up_ms();
+     if (plane.control_mode == &plane.mode_guided && guided_takeoff) {
+@@ -3393,6 +3402,14 @@ bool QuadPlane::do_vtol_takeoff(const AP_Mission::Mission_Command& cmd)
+     // a fresh takeoff clears any previously commanded landing heading hold
+     clear_land_yaw_hold();
+ 
++    // optional commanded takeoff heading packed into p1 (param1 enable, param2
++    // heading, 0 = north). Held through the climb, released at the next waypoint.
++    clear_takeoff_yaw_hold();
++    if (cmd.p1 & AP_Mission::VTOL_YAW_ENABLE) {
++        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_YAW_SHIFT) & AP_Mission::VTOL_YAW_MASK;
++        set_takeoff_yaw_hold_deg((float)heading_deg);
++    }
++
+     if (!setup()) {
+         return false;
+     }
+@@ -3467,8 +3484,8 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
+     // param1 enables it, param2 is the heading (0 = north). Takes precedence over
+     // any CONDITION_YAW set earlier. If not enabled we leave the hold untouched so
+     // a landing with enable=0 uses stock weathervane yaw.
+-    if (cmd.p1 & AP_Mission::VTOL_LAND_YAW_ENABLE) {
+-        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_LAND_YAW_SHIFT) & AP_Mission::VTOL_LAND_YAW_MASK;
++    if (cmd.p1 & AP_Mission::VTOL_YAW_ENABLE) {
++        const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_YAW_SHIFT) & AP_Mission::VTOL_YAW_MASK;
+         set_land_yaw_hold_deg((float)heading_deg);
+     }
+ 
+@@ -3532,8 +3549,21 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
+ #endif
+ 
+     if (plane.current_loc.alt < plane.next_WP_loc.alt) {
++        takeoff_yaw_alt_reached_ms = 0;
+         return false;
+     }
++    // reached target altitude: if a takeoff heading was commanded, rotate to it
++    // before completing the takeoff (bounded wait so the mission cannot hang if
++    // the yaw loop lacks the authority to get there)
++    if (takeoff_yaw_hold()) {
++        if (takeoff_yaw_alt_reached_ms == 0) {
++            takeoff_yaw_alt_reached_ms = now;
++        }
++        const float yaw_err_deg = fabsf(wrap_180(takeoff_yaw_target_deg - plane.ahrs.get_yaw_deg()));
++        if (yaw_err_deg > 5.0f && (now - takeoff_yaw_alt_reached_ms) < 10000) {
++            return false;
++        }
++    }
+     transition->restart();
+     plane.TECS_controller.set_pitch_max(transition_pitch_max);
+     plane.TECS_controller.set_pitch_min(-transition_pitch_max);
+@@ -3947,6 +3977,17 @@ bool QuadPlane::land_yaw_hold(void) const
+     return land_yaw_hold_active && in_vtol_land_descent();
+ }
+ 
++/*
++  return true if we should command the heading during a VTOL takeoff.
++  scoped to the active NAV_VTOL_TAKEOFF command so it releases automatically
++  once the mission advances to the next waypoint.
++ */
++bool QuadPlane::takeoff_yaw_hold(void) const
++{
++    return takeoff_yaw_hold_active && in_vtol_auto() &&
++           is_vtol_takeoff(plane.mission.get_current_nav_cmd().id);
++}
++
+ /*
+   get weathervaning yaw rate in cd/s
+  */
+@@ -3965,7 +4006,8 @@ float QuadPlane::get_weathervane_yaw_rate_cds(void)
+ #endif
+         plane.control_mode == &plane.mode_qhover ||
+         should_relax() ||
+-        land_yaw_hold()
++        land_yaw_hold() ||
++        takeoff_yaw_hold()
+         ) {
+         // Ensure the weathervane controller is reset to prevent weathervaning from happening outside of the timer
+         weathervane->reset();
+diff --git a/ArduPlane/quadplane.h b/ArduPlane/quadplane.h
+index 50cd3b5..4876ebb 100644
+--- a/ArduPlane/quadplane.h
++++ b/ArduPlane/quadplane.h
+@@ -124,6 +124,12 @@ public:
+     void set_land_yaw_hold_deg(float heading_deg) { land_yaw_hold_active = true; land_yaw_target_deg = wrap_360(heading_deg); }
+     void clear_land_yaw_hold(void) { land_yaw_hold_active = false; }
+     bool land_yaw_hold(void) const;
++
++    // commanded heading during a VTOL takeoff (set from NAV_VTOL_TAKEOFF param1/param2).
++    // held through the climb and released at the next waypoint.
++    void set_takeoff_yaw_hold_deg(float heading_deg) { takeoff_yaw_hold_active = true; takeoff_yaw_target_deg = wrap_360(heading_deg); }
++    void clear_takeoff_yaw_hold(void) { takeoff_yaw_hold_active = false; }
++    bool takeoff_yaw_hold(void) const;
+     bool verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd);
+     bool verify_vtol_land(void);
+     bool in_vtol_auto(void) const;
+@@ -630,6 +636,11 @@ private:
+     bool land_yaw_hold_active{false};
+     float land_yaw_target_deg{0};
+ 
++    // commanded heading during VTOL takeoff (released at next waypoint)
++    bool takeoff_yaw_hold_active{false};
++    float takeoff_yaw_target_deg{0};
++    uint32_t takeoff_yaw_alt_reached_ms{0};
++
+     // AHRS alt for land abort and package place, meters
+     float land_descend_start_alt_m;
+ 
+diff --git a/libraries/AP_Mission/AP_Mission.cpp b/libraries/AP_Mission/AP_Mission.cpp
+index d0cc716..d052b05 100644
+--- a/libraries/AP_Mission/AP_Mission.cpp
++++ b/libraries/AP_Mission/AP_Mission.cpp
+@@ -1037,7 +1037,7 @@ MAV_MISSION_RESULT AP_Mission::sanity_check_params(const mavlink_mission_item_in
+         nan_mask = ~((1 << 1) | (1 << 2) | (1 << 3)); // param 2,3 & 4 can be nan
+         break;
+     case MAV_CMD_NAV_VTOL_TAKEOFF:
+-        nan_mask = ~(1 << 3); // param 4 can be nan
++        nan_mask = ~((1 << 1) | (1 << 3)); // param 2 (heading) and 4 can be nan
+         break;
+     case MAV_CMD_NAV_VTOL_LAND:
+         nan_mask = ~((1 << 1) | (1 << 2) | (1 << 3)); // param 2 (heading), 3 and 4 can be nan
+@@ -1353,6 +1353,14 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_TAKEOFF:
++        // param1 = enable (0 = off / stock takeoff yaw, non-zero = command yaw)
++        // param2 = commanded takeoff heading in degrees (0 = north, 0..359).
++        // held through the climb only, released at the next waypoint.
++        cmd.p1 = 0;
++        if (!is_zero(packet.param1)) {
++            const uint16_t heading_deg = (uint16_t)constrain_float(roundf(wrap_360(packet.param2)), 0, 359);
++            cmd.p1 = VTOL_YAW_ENABLE | ((heading_deg & VTOL_YAW_MASK) << VTOL_YAW_SHIFT);
++        }
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_LAND:
+@@ -1361,7 +1369,7 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
+         cmd.p1 = 0;
+         if (!is_zero(packet.param1)) {
+             const uint16_t heading_deg = (uint16_t)constrain_float(roundf(wrap_360(packet.param2)), 0, 359);
+-            cmd.p1 = VTOL_LAND_YAW_ENABLE | ((heading_deg & VTOL_LAND_YAW_MASK) << VTOL_LAND_YAW_SHIFT);
++            cmd.p1 = VTOL_YAW_ENABLE | ((heading_deg & VTOL_YAW_MASK) << VTOL_YAW_SHIFT);
+         }
+         break;
+ 
+@@ -1899,12 +1907,16 @@ bool AP_Mission::mission_cmd_to_mavlink_int(const AP_Mission::Mission_Command& c
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_TAKEOFF:
++        if (cmd.p1 & VTOL_YAW_ENABLE) {
++            packet.param1 = 1;
++            packet.param2 = (cmd.p1 >> VTOL_YAW_SHIFT) & VTOL_YAW_MASK;
++        }
+         break;
+ 
+     case MAV_CMD_NAV_VTOL_LAND:
+-        if (cmd.p1 & VTOL_LAND_YAW_ENABLE) {
++        if (cmd.p1 & VTOL_YAW_ENABLE) {
+             packet.param1 = 1;
+-            packet.param2 = (cmd.p1 >> VTOL_LAND_YAW_SHIFT) & VTOL_LAND_YAW_MASK;
++            packet.param2 = (cmd.p1 >> VTOL_YAW_SHIFT) & VTOL_YAW_MASK;
+         }
+         break;
+ 
+diff --git a/libraries/AP_Mission/AP_Mission.h b/libraries/AP_Mission/AP_Mission.h
+index f862e4d..c3e5021 100644
+--- a/libraries/AP_Mission/AP_Mission.h
++++ b/libraries/AP_Mission/AP_Mission.h
+@@ -464,16 +464,18 @@ public:
+         }
+     };
+ 
+-    // Encoding of Mission_Command::p1 for MAV_CMD_NAV_VTOL_LAND.
+-    // p1 is the only spare field on a location-type command (the 12 content
+-    // bytes are consumed by lat/lon/alt), so we pack the commanded landing
+-    // heading into it:
++    // Encoding of Mission_Command::p1 for MAV_CMD_NAV_VTOL_LAND and
++    // MAV_CMD_NAV_VTOL_TAKEOFF. p1 is the only spare field on a location-type
++    // command (the 12 content bytes are consumed by lat/lon/alt), so we pack a
++    // commanded yaw into it:
+     //   MAVLink param1 (enable) -> bit 0. 0 = off (stock weathervane yaw),
+-    //                                     non-zero = hold the commanded heading.
++    //                                     non-zero = command the yaw.
+     //   MAVLink param2 (heading, deg) -> bits 1..9. 0 = north, valid 0..359.
+-    static constexpr uint16_t VTOL_LAND_YAW_ENABLE = 0x0001;
+-    static constexpr uint8_t  VTOL_LAND_YAW_SHIFT  = 1;
+-    static constexpr uint16_t VTOL_LAND_YAW_MASK   = 0x01FF;
++    // For LAND the heading is held through the descent; for TAKEOFF it is held
++    // through the climb and released at the next waypoint.
++    static constexpr uint16_t VTOL_YAW_ENABLE = 0x0001;
++    static constexpr uint8_t  VTOL_YAW_SHIFT  = 1;
++    static constexpr uint16_t VTOL_YAW_MASK   = 0x01FF;
+ 
+ 
+     // main program function pointers
+-- 
+2.34.1
+
