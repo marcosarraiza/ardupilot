@@ -1,0 +1,54 @@
+From edc3542503702430cc671f485686058c62e8f2ab Mon Sep 17 00:00:00 2001
+From: Marcos <marcosfermin7@gmail.com>
+Date: Mon, 20 Jul 2026 17:39:44 -0400
+Subject: [PATCH] NAV_VTOL_TAKEOFF heading: hold altitude while rotating
+
+Flight testing showed the aircraft climbed well past the commanded takeoff
+altitude while turning to the commanded heading: takeoff_controller() keeps
+commanding a constant climb rate, and the takeoff is held open until the
+heading is reached, so it climbed for the whole rotation (15ft commanded,
+~50ft actual).
+
+Command zero climb rate once the takeoff altitude is reached and we are
+rotating, so the aircraft holds the commanded takeoff altitude, turns, and
+only then continues the mission. Also extend the rotation timeout from 10s
+to 20s, which is now safe because the aircraft is holding altitude rather
+than climbing.
+---
+ ArduPlane/quadplane.cpp | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/ArduPlane/quadplane.cpp b/ArduPlane/quadplane.cpp
+index 31a521d..56f76d1 100644
+--- a/ArduPlane/quadplane.cpp
++++ b/ArduPlane/quadplane.cpp
+@@ -3266,6 +3266,17 @@ void QuadPlane::takeoff_controller(void)
+     }
+ 
+     float vel_u_ms = wp_nav->get_default_speed_up_ms();
++
++    /*
++      if we have reached the takeoff altitude and are rotating to a commanded
++      takeoff heading, stop climbing and hold altitude while we turn. Without
++      this the takeoff keeps climbing for the whole rotation and overshoots the
++      commanded takeoff altitude.
++     */
++    if (takeoff_yaw_hold() && at_takeoff_alt) {
++        vel_u_ms = 0;
++    }
++
+     if (plane.control_mode == &plane.mode_guided && guided_takeoff) {
+         // for guided takeoff we aim for a specific height with zero
+         // velocity at that height
+@@ -3560,7 +3571,7 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
+             takeoff_yaw_alt_reached_ms = now;
+         }
+         const float yaw_err_deg = fabsf(wrap_180(takeoff_yaw_target_deg - plane.ahrs.get_yaw_deg()));
+-        if (yaw_err_deg > 5.0f && (now - takeoff_yaw_alt_reached_ms) < 10000) {
++        if (yaw_err_deg > 5.0f && (now - takeoff_yaw_alt_reached_ms) < 20000) {
+             return false;
+         }
+     }
+-- 
+2.34.1
+
