@@ -3266,6 +3266,17 @@ void QuadPlane::takeoff_controller(void)
     }
 
     float vel_u_ms = wp_nav->get_default_speed_up_ms();
+
+    /*
+      if we have reached the takeoff altitude and are rotating to a commanded
+      takeoff heading, stop climbing and hold altitude while we turn. Without
+      this the takeoff keeps climbing for the whole rotation and overshoots the
+      commanded takeoff altitude.
+     */
+    if (takeoff_yaw_hold() && at_takeoff_alt) {
+        vel_u_ms = 0;
+    }
+
     if (plane.control_mode == &plane.mode_guided && guided_takeoff) {
         // for guided takeoff we aim for a specific height with zero
         // velocity at that height
@@ -3560,7 +3571,7 @@ bool QuadPlane::verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd)
             takeoff_yaw_alt_reached_ms = now;
         }
         const float yaw_err_deg = fabsf(wrap_180(takeoff_yaw_target_deg - plane.ahrs.get_yaw_deg()));
-        if (yaw_err_deg > 5.0f && (now - takeoff_yaw_alt_reached_ms) < 10000) {
+        if (yaw_err_deg > 5.0f && (now - takeoff_yaw_alt_reached_ms) < 20000) {
             return false;
         }
     }
