@@ -121,9 +121,12 @@ public:
 
     // commanded heading hold during a VTOL landing (set from a CONDITION_YAW
     // mission item placed just before NAV_VTOL_LAND). heading is absolute, deg from north.
-    void set_land_yaw_hold_deg(float heading_deg) { land_yaw_hold_active = true; land_yaw_target_deg = wrap_360(heading_deg); }
-    void clear_land_yaw_hold(void) { land_yaw_hold_active = false; }
-    bool land_yaw_hold(void) const;
+    // with nothing commanded, set_land_yaw_hold_current() holds the heading the
+    // aircraft arrives at the landing point with.
+    void set_land_yaw_hold_deg(float heading_deg) { land_yaw_hold_active = true; land_yaw_capture = false; land_yaw_captured = false; land_yaw_target_deg = wrap_360(heading_deg); }
+    void set_land_yaw_hold_current(void) { land_yaw_hold_active = true; land_yaw_capture = true; land_yaw_captured = false; }
+    void clear_land_yaw_hold(void) { land_yaw_hold_active = false; land_yaw_capture = false; land_yaw_captured = false; }
+    bool land_yaw_hold(void);
 
     // commanded heading during a VTOL takeoff (set from NAV_VTOL_TAKEOFF param1/param2).
     // held through the climb and released at the next waypoint.
@@ -634,6 +637,10 @@ private:
 
     // commanded heading hold during VTOL landing
     bool land_yaw_hold_active{false};
+    // land_yaw_capture: no heading was commanded, hold the one we arrive with
+    // land_yaw_captured: that arrival heading has been latched
+    bool land_yaw_capture{false};
+    bool land_yaw_captured{false};
     float land_yaw_target_deg{0};
 
     // commanded heading during VTOL takeoff (released at next waypoint)

@@ -3493,11 +3493,15 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
 
     // optional commanded landing heading packed into p1 (see AP_Mission p1 encoding).
     // param1 enables it, param2 is the heading (0 = north). Takes precedence over
-    // any CONDITION_YAW set earlier. If not enabled we leave the hold untouched so
-    // a landing with enable=0 uses stock weathervane yaw.
+    // any CONDITION_YAW set earlier. With nothing commanded we still hold a heading
+    // through the descent: the one the aircraft arrives at the pad with.
     if (cmd.p1 & AP_Mission::VTOL_YAW_ENABLE) {
         const uint16_t heading_deg = (cmd.p1 >> AP_Mission::VTOL_YAW_SHIFT) & AP_Mission::VTOL_YAW_MASK;
         set_land_yaw_hold_deg((float)heading_deg);
+    } else if (!land_yaw_hold_active || land_yaw_capture) {
+        // no heading on this land item and none from a preceding CONDITION_YAW:
+        // lock whatever heading we come in on
+        set_land_yaw_hold_current();
     }
 
     plane.set_next_WP(cmd.content.location);
@@ -3975,17 +3979,28 @@ float QuadPlane::forward_throttle_pct()
 }
 
 /*
-  return true if we should hold the commanded heading during a VTOL landing.
-  only active while actually in the VTOL land sequence so it never affects
-  guided repositioning, QRTL, or normal weathervaning.
+  return true if a heading should be held during this VTOL landing, and latch
+  the arrival heading on the first descent cycle when none was commanded.
+
+  Only active once we are actually descending on an AUTO VTOL land
+  (LAND_DESCEND / LAND_FINAL / LAND_ABORT), so the POSITION1/POSITION2 approach
+  yaws normally and QRTL / QLAND / guided repositioning are untouched.
  */
-bool QuadPlane::land_yaw_hold(void) const
+bool QuadPlane::land_yaw_hold(void)
 {
-    // only hold the commanded heading once we are actually descending
-    // (LAND_DESCEND / LAND_FINAL / LAND_ABORT). During the POSITION1/POSITION2
-    // approach the aircraft yaws normally and only rotates to the commanded
-    // heading as it starts coming down.
-    return land_yaw_hold_active && in_vtol_land_descent();
+    if (!land_yaw_hold_active || !in_vtol_auto() || !in_vtol_land_descent()) {
+        return false;
+    }
+    if (land_yaw_capture && !land_yaw_captured) {
+        // no heading was commanded for this landing, so lock in the heading the
+        // aircraft arrived with. Without this the descent runs on a yaw *rate*
+        // command of zero, which leaves the nose free to drift with wind and
+        // trim instead of actively holding it.
+        land_yaw_target_deg = wrap_360(plane.ahrs.get_yaw_deg());
+        land_yaw_captured = true;
+        gcs().send_text(MAV_SEVERITY_INFO, "VTOL land: holding heading %.0f", (double)land_yaw_target_deg);
+    }
+    return true;
 }
 
 /*
