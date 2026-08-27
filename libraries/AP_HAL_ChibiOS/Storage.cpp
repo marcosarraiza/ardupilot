@@ -52,6 +52,10 @@ extern const AP_HAL::HAL& hal;
 #define HAL_RAMTRON_ALLOW_FALLBACK 0
 #endif
 
+#ifndef HAL_PAGE_EEPROM_ALLOW_FALLBACK
+#define HAL_PAGE_EEPROM_ALLOW_FALLBACK 0
+#endif
+
 void Storage::_storage_open(void)
 {
     if (_initialisedType != StorageBackend::None) {

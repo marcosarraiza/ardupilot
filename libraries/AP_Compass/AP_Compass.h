@@ -497,7 +497,10 @@ private:
         DRIVER_IIS2MDC  =22,
 #endif
         // DRIVER_LIS2MDL  =23,  // DO NOT re-use this ID; same sensor as IIS2MDC
-};
+#if AP_COMPASS_AK09940A_ENABLED
+        DRIVER_AK09940A =24,
+#endif
+    };
 
     bool _driver_enabled(enum DriverType driver_type);
     void add_backend(DriverType driver_type, AP_Compass_Backend *backend);
