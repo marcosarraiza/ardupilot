@@ -1,7 +1,7 @@
 #pragma once
 #include "AP_Compass_config.h"
 
-#if AP_COMPASS_AK09940A_ENABLElD
+#if AP_COMPASS_AK09940A_ENABLED
 
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
@@ -16,7 +16,7 @@
 class AP_Compass_AK09940A : public AP_Compass_Backend
 {
 public:
-    public AP_Compass_Backend *probe(AP_HAL::OwnPtr<AP_HAL::Device> dev,
+    static AP_Compass_Backend *probe(AP_HAL::OwnPtr<AP_HAL::Device> dev,
                                     bool force_external,
                                     enum Rotation rotation);
 

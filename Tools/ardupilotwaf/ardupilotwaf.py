@@ -16,7 +16,6 @@ SOURCE_EXTS = [
     '*.c',
     '*.cpp',
 ]
-To a para... What am No, Wait It's important to have the same thing as the, oh, I can't look at it. Yeah. Okay, Yeah. Okay, yeah, yeah. Hello, Tina. Can I I don't know what to I don't -huh. Okay, this one, this one, okay, line, your own image, And I haven't, I haven't finished I haven't, I haven't finished Well, I need to look through it, but No, it is a different answer. Nuh-. By Yours is Literally your resume. Yeah. And me on knowing Let's build something I will go on, you go on, Yeah, so you know, sometimes they come in those colors. No, but you see, you know, no, no. No me gusta que la foto se vea así. No se All right, well, on, can That's like, it was telling me to do that. I, I can Fix it. This... Aquí, Eh... Okay, en Esta parte tienes que que poner entonces una... una clase que diga qué, see... I cannot So, I can't believe I wasn't. It's Come on, come on now. And
 COMMON_VEHICLE_DEPENDENT_CAN_LIBRARIES = [
     'AP_CANManager',
     'AP_KDECAN',

@@ -490,7 +490,7 @@ bool Storage::healthy(void)
     }
 #endif
 #if HAL_WITH_PAGE_EEPROM
-    if (_initialisedType == StorageBackend::PAGE_EEPROM)
+    if (_initialisedType == StorageBackend::Page_EEPROM)
     {
         return AP_HAL::millis() - _last_empty_ms < 60000U;
     }
