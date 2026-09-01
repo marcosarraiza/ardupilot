@@ -58,7 +58,10 @@ AP_Compass_AK09940A::AP_Compass_AK09940A(AP_HAL::OwnPtr<AP_HAL::Device> dev,
     , _rotation(rotation)
 {
 }
-
+AP_Compass_AK09940A:: ~AP_Compass_AK09940A()
+{
+    delete _dev;
+}
 AP_Compass_Backend *AP_Compass_AK09940A::probe(AP_HAL::OwnPtr<AP_HAL::Device> dev, 
                                             bool force_external, enum Rotation rotation)
 {
