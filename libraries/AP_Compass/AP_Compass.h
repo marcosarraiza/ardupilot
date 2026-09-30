@@ -498,7 +498,7 @@ private:
 #endif
         // DRIVER_LIS2MDL  =23,  // DO NOT re-use this ID; same sensor as IIS2MDC
 #if AP_COMPASS_AK09940A_ENABLED
-        DRIVER_AK09940A =24,
+        DRIVER_AK09940A =25,
 #endif
     };
 
