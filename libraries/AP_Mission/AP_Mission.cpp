@@ -1371,6 +1371,9 @@ MAV_MISSION_RESULT AP_Mission::mavlink_int_to_mission_cmd(const mavlink_mission_
             const uint16_t heading_deg = (uint16_t)constrain_float(roundf(wrap_360(packet.param2)), 0, 359);
             cmd.p1 = VTOL_YAW_ENABLE | ((heading_deg & VTOL_YAW_MASK) << VTOL_YAW_SHIFT);
         }
+
+        if (!isnan(packet.param3) && !is_zero(packet.param3)) cmd.p1 |= VTOL_RETRY_ENABLED;
+
         break;
 
     case MAV_CMD_DO_VTOL_TRANSITION:
@@ -1918,6 +1921,8 @@ bool AP_Mission::mission_cmd_to_mavlink_int(const AP_Mission::Mission_Command& c
             packet.param1 = 1;
             packet.param2 = (cmd.p1 >> VTOL_YAW_SHIFT) & VTOL_YAW_MASK;
         }
+
+        packet.param3 = (cmd.p1 & VTOL_RETRY_ENABLED) ? 1 : 0; 
         break;
 
     case MAV_CMD_DO_VTOL_TRANSITION:

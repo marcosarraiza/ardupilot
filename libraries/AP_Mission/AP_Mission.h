@@ -476,6 +476,7 @@ public:
     static constexpr uint16_t VTOL_YAW_ENABLE = 0x0001;
     static constexpr uint8_t  VTOL_YAW_SHIFT  = 1;
     static constexpr uint16_t VTOL_YAW_MASK   = 0x01FF;
+    static constexpr uint16_t VTOL_RETRY_ENABLED = 0x0400;
 
 
     // main program function pointers
