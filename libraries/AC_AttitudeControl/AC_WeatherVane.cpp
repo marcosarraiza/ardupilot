@@ -161,6 +161,7 @@ bool AC_WeatherVane::get_yaw_out(float &yaw_output, const int16_t pilot_yaw, con
         first_activate_ms = now;
     }
     if (now - first_activate_ms < 2000) {
+        active = false;
         return false;
     }
 
@@ -227,6 +228,7 @@ bool AC_WeatherVane::get_yaw_out(float &yaw_output, const int16_t pilot_yaw, con
     // Slew output and apply gain
     last_output = 0.98 * last_output + 0.02 * output * _gain;
     yaw_output = last_output;
+    active = true;
     return true;
 }
 
@@ -237,5 +239,6 @@ void AC_WeatherVane::reset(void)
     active_msg_dir = Direction::OFF;
     first_activate_ms = 0;
     last_check_ms = AP_HAL::millis();
+    active = false;
 }
 

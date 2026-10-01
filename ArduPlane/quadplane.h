@@ -641,6 +641,11 @@ private:
     // land_yaw_captured: that arrival heading has been latched
     bool land_yaw_capture{false};
     bool land_yaw_captured{false};
+    // weathervane hand-over: the weathervane keeps the yaw axis until it stops
+    // on its own, then the heading hold takes over for the rest of the descent
+    uint32_t land_yaw_descent_start_ms{0};
+    uint32_t land_yaw_wv_active_ms{0};
+    bool land_yaw_wv_done{false};
     float land_yaw_target_deg{0};
 
     // commanded heading during VTOL takeoff (released at next waypoint)

@@ -15,6 +15,11 @@ class AC_WeatherVane {
         // Function to reset all flags and set values. Invoked whenever the weather vaning process is interrupted
         void reset(void);
 
+        // true while get_yaw_out() is commanding a yaw rate. Goes false as soon as
+        // the weathervane stops on its own: below the minimum height, outside the
+        // speed limits, disabled for this phase of flight, or pilot yaw input.
+        bool is_active(void) const { return active; }
+
         // allow/disallow weather vaning from other means than by the parameter
         void allow_weathervaning(bool allow) { allowed = allow; }
 
@@ -51,6 +56,9 @@ class AC_WeatherVane {
         Direction active_msg_dir;
         uint32_t first_activate_ms;
         uint32_t last_check_ms;
+
+        // true while actively commanding a yaw rate, see is_active()
+        bool active = false;
 
         // Init to true here to avoid a race between init of RC_channel and weathervane
         bool allowed = true;

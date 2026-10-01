@@ -3979,8 +3979,14 @@ float QuadPlane::forward_throttle_pct()
 }
 
 /*
-  return true if a heading should be held during this VTOL landing, and latch
-  the arrival heading on the first descent cycle when none was commanded.
+  return true if we should be holding a heading during this VTOL landing.
+
+  The weathervane gets the yaw axis first: while it is actively commanding yaw
+  we stay out of the way and let it point the aircraft into wind. Once it stops
+  on its own -- below Q_WVANE_HGT_MIN, Q_WVANE_LAND = 0, outside the speed
+  limits, or weathervaning disabled altogether -- we take the axis and hold a
+  heading for the rest of the descent: the heading commanded on the land item,
+  or if none was commanded the heading the aircraft is on at hand-over.
 
   Only active once we are actually descending on an AUTO VTOL land
   (LAND_DESCEND / LAND_FINAL / LAND_ABORT), so the POSITION1/POSITION2 approach
@@ -3989,14 +3995,46 @@ float QuadPlane::forward_throttle_pct()
 bool QuadPlane::land_yaw_hold(void)
 {
     if (!land_yaw_hold_active || !in_vtol_auto() || !in_vtol_land_descent()) {
+        // not descending on a mission VTOL land: re-arm for the next descent
+        land_yaw_descent_start_ms = 0;
+        land_yaw_wv_active_ms = 0;
+        land_yaw_wv_done = false;
+        land_yaw_captured = false;
         return false;
     }
+
+    const uint32_t now = AP_HAL::millis();
+    if (land_yaw_descent_start_ms == 0) {
+        land_yaw_descent_start_ms = now;
+    }
+
+    if (!land_yaw_wv_done) {
+        if (weathervane != nullptr && weathervane->is_active()) {
+            // the weathervane still has the yaw axis, leave it alone
+            land_yaw_wv_active_ms = now;
+            return false;
+        }
+        /*
+          the weathervane is not commanding yaw. Wait for it to stay quiet
+          before taking over: 0.5s if it had been running, so a momentary
+          drop-out does not hand over early; 2.5s from the start of the descent
+          if it never ran at all, which covers both its own 2s activation
+          buffer and weathervaning simply being disabled.
+         */
+        const uint32_t quiet_since_ms = (land_yaw_wv_active_ms != 0) ? land_yaw_wv_active_ms : land_yaw_descent_start_ms;
+        const uint32_t settle_ms = (land_yaw_wv_active_ms != 0) ? 500 : 2500;
+        if (now - quiet_since_ms < settle_ms) {
+            return false;
+        }
+        land_yaw_wv_done = true;
+    }
+
     if (land_yaw_capture && !land_yaw_captured) {
-        // no heading was commanded for this landing, so lock in the heading the
-        // aircraft arrived with. Without this the descent runs on a yaw *rate*
-        // command of zero, which leaves the nose free to drift with wind and
-        // trim instead of actively holding it.
+        // no heading was commanded for this landing, so hold the heading the
+        // aircraft is on as the weathervane hands the axis over
         land_yaw_target_deg = wrap_360(plane.ahrs.get_yaw_deg());
+    }
+    if (!land_yaw_captured) {
         land_yaw_captured = true;
         gcs().send_text(MAV_SEVERITY_INFO, "VTOL land: holding heading %.0f", (double)land_yaw_target_deg);
     }
