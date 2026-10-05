@@ -775,6 +775,9 @@ public:
 private:
     void motor_test_stop();
 
+    uint32_t retry_hold_start_ms;
+    static constexpr uint32_t RETRY_HOLD_TIMEOUT_MS = 60000;
+
     // check for loss of thrust and trigger thrust boost in motors library
     void thrust_loss_check(bool reset);
 

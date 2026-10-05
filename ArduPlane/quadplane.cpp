@@ -3490,6 +3490,8 @@ bool QuadPlane::do_vtol_land(const AP_Mission::Mission_Command& cmd)
     if (!setup()) {
         return false;
     }
+    
+    retry_hold_start_ms = 0;
 
     // optional commanded landing heading packed into p1 (see AP_Mission p1 encoding).
     // param1 enables it, param2 is the heading (0 = north). Takes precedence over
@@ -3774,11 +3776,27 @@ bool QuadPlane::verify_vtol_land(void)
         }
     }
     
-    if (check_land_complete() && plane.mission.continue_after_land()) {
+        if (check_land_complete() && plane.mission.continue_after_land()) {
+        const AP_Mission::Mission_Command &cmd = plane.mission.get_current_nav_cmd();
+        if (cmd.id == MAV_CMD_NAV_VTOL_LAND && (cmd.p1 & AP_Mission::VTOL_RETRY_ENABLED)) {
+            retry_hold_start_ms = AP_HAL::millis();
+            set_desired_spool_state(AP_Motors::DesiredSpoolState::GROUND_IDLE);
+            gcs().send_text(MAV_SEVERITY_INFO, "Land complete, holding for companion");
+            return false;
+        }
         gcs().send_text(MAV_SEVERITY_INFO,"Mission continue");
         return true;
     }
-    return false;
+
+    if (retry_hold_start_ms != 0) {
+        set_desired_spool_state(AP_Motors::DesiredSpoolState::GROUND_IDLE);
+        if (AP_HAL::millis() - retry_hold_start_ms > RETRY_HOLD_TIMEOUT_MS) {
+            retry_hold_start_ms = 0;
+            gcs().send_text(MAV_SEVERITY_WARNING, "Retry hold timeout, mission continue");
+            return true;
+        }
+    }
+    return false;       
 }
 
 #if HAL_LOGGING_ENABLED
