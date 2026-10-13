@@ -1778,16 +1778,26 @@ AP_InertialSensor::_init_gyro()
     // the first
 
     uint8_t num_converged = 0;
+    #ifdef HAL_INS_GYRO_CAL_WINDOW_MS
+        const uint16_t max_window_ms = 30000 / HAL_INS_GYRO_CAL_WINDOW_MS;
+    #else
+        const uint16_t max_window_ms = 30 * 4;;
 
+    #endif
     // we try to get a good calibration estimate for up to 30 seconds
     // if the gyros are stable, we should get it in 1 second
-    for (int16_t j = 0; j <= 30*4 && num_converged < num_gyros; j++) {
+    for (int16_t j = 0; j <= max_window_ms && num_converged < num_gyros; j++) {
         Vector3f gyro_sum[INS_MAX_INSTANCES], gyro_avg[INS_MAX_INSTANCES], gyro_diff[INS_MAX_INSTANCES];
         Vector3f accel_start;
         float diff_norm[INS_MAX_INSTANCES];
-        uint8_t i;
+    #ifdef HAL_INS_GYRO_CAL_WINDOW_MS
+        uint16_t i;
+        EXPECT_DELAY_MS(HAL_INS_GYRO_CAL_WINDOW_MS + 1000);
 
+    #else
+        uint8_t i;
         EXPECT_DELAY_MS(1000);
+    #endif
 
         memset(diff_norm, 0, sizeof(diff_norm));
 
@@ -1797,7 +1807,13 @@ AP_InertialSensor::_init_gyro()
             gyro_sum[k].zero();
         }
         accel_start = get_accel(0);
+    
+        #ifdef HAL_INS_GYRO_CAL_WINDOW_MS
+        const uint32_t window_start = AP_HAL::millis(); 
+        for (i=0; AP_HAL::millis() - window_start < HAL_INS_GYRO_CAL_WINDOW_MS; i++) {
+        #else
         for (i=0; i<50; i++) {
+        #endif
             update();
             for (uint8_t k=0; k<num_gyros; k++) {
                 gyro_sum[k] += get_gyro(k);
